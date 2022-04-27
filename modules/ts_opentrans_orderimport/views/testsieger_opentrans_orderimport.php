@@ -27,10 +27,6 @@
         const RS_VAT = 19;
         const LOCK_TIME = 600;
 
-        /**
-         * @var resource FTP-Stream
-         */
-        protected $_ftp_stream = NULL;
 
         /**
          * Disable direct access to controller, and avoid smarty kicking in.
@@ -92,9 +88,6 @@
          * MAIN ENTRY POINT FOR NON SHOP-SPECIFIC PROCESSING OF XML-FILES
          */
         public function import_orders(array $config) {
-
-
-
             // Check for concurrency.
            // $this->concurrency_lock_check();
            // $this->concurrency_lock_set();
@@ -103,14 +96,7 @@
             // will release concurrency lock.
             try {
 
-                // Get order xmls.
-                $ftpstream = $this->get_ftp_stream($config);
-
-                if (!is_resource($ftpstream)){
-                    throw new Exception('unable to get ftp stream');
-                }
-
-                $this->get_remote_xmls($ftpstream);
+                $this->get_remote_xmls();
 
                 // Check for new files
                 $new_files = $this->get_order_filenames();
@@ -144,7 +130,7 @@
                         // Delegate to actual import:
 
                         $this->process_xml_file($filename, $config);
-                        $this->archive_xml_filename($ftpstream, $filename);
+                        $this->archive_xml_filename($filename);
 
                     } catch (rs_opentrans_exception $e) {
                         $this->msglog($e->getMessage(), 3);
@@ -587,11 +573,11 @@
         *
         * @returns bool found_new
         */
-        protected function get_remote_xmls($ftpstream) {
+        protected function get_remote_xmls() {
 
             $server_path = '/outbound';
 
-            $remote_filelist = ftp_nlist( $ftpstream , $server_path );
+            $remote_filelist = ftps::ftps_getlist( $server_path );
 
             if (!$remote_filelist || !is_array($remote_filelist)) {
                 throw new Exception('Could not get remote filelist after successfull login. Check firewall.');
@@ -601,7 +587,9 @@
 
             $found_new = false;
 
-            foreach($remote_filelist AS $filename_with_path){
+            foreach($remote_filelist AS $filename){
+
+                $filename_with_path = '/outbound/' . $filename;
 
                 //echo "scanning remote file $filename_with_path\n\n";
                 if (false ===strpos($filename_with_path,'-ORDER.xml')) {
@@ -623,8 +611,7 @@
                 //download
                 $local_file = $this->get_xml_inbound_path() . basename($filename_with_path);
                 $this->msglog("Saving to local file $local_file");
-                $success = ftp_get($ftpstream, $local_file, $filename_with_path,
-                FTP_BINARY);
+                $success = ftps::ftps_get($filename_with_path, $local_file);
 
                 if ($success) {
                     $this->msglog("Got new xml $filename_with_path",2);
@@ -659,6 +646,14 @@
             //return $this->getViewConfig()->getModulePath('ts_opentrans_orderimport') .'data/';
             return  getShopBasePath().'modules/ts_opentrans_orderimport/data/';
 
+        }
+
+        /**
+         * @returns string Path of xml tmp folder
+         */
+        protected function get_xml_tmp_path()
+        {
+            return $this->get_xmlpath() . 'tmp/';
         }
 
         #########################################################################################
@@ -837,51 +832,15 @@
         }
 
         /**
-        * Connects remote FTP, returns stream handle.
-        * Will return cached Stream once connected.
-        *
-        * @return resource $this->_ftp_stream
-        */
-        protected function get_ftp_stream(array $config) {
-
-            if (isset($this->_ftp_stream) && is_resource($this->_ftp_stream)){
-                return $this->_ftp_stream;
-            }
-
-            error_reporting(E_ERROR | E_WARNING | E_PARSE | E_NOTICE);
-            $this->msglog(putenv('TMPDIR=' . $this->get_datapath()));
-
-            //Connect to the FTP server
-            $ftpstream = ftp_connect($config['testsieger_ftphost'], (string)$config['testsieger_ftpport']);
-            if (!$ftpstream || !is_resource($ftpstream)) {throw new Exception('failed ftp connection to ' . $config['testsieger_ftphost'] . ':' . $config['testsieger_ftpport']);}
-
-            //Login to the FTP server
-            $login = ftp_login($ftpstream, $config['testsieger_ftpuser'], $config['testsieger_ftppass']);
-            if (!$login) {throw new Exception('failed ftp login');}
-
-            //We are now connected to FTP server.
-
-            // turn on passive mode transfers
-            $success = ftp_pasv ($ftpstream, true);
-            if (!$success) {throw new Exception('failed ftp passive mode');}
-
-            $this->_ftp_stream = $ftpstream;
-
-            return $this->_ftp_stream;
-
-        }
-
-        /**
         * Moves xml file to archive folders.
         *
-        * @param stream $ftpstream
         * @param string $filename
         */
-        public function archive_xml_filename($ftpstream, $filename) {
+        public function archive_xml_filename($filename) {
 
             $filename = basename($filename);
 
-            $this->archive_xml_filename_remotly($ftpstream, $filename);
+            $this->archive_xml_filename_remotly($filename);
             $this->archive_xml_filename_locally($filename);
 
         }
@@ -889,29 +848,22 @@
         /**
         * Moves xml file remotly from /outbound to /backup
         *
-        * @param stream $ftpstream
         * @param string $filename
         */
-        protected function archive_xml_filename_remotly($ftpstream, $filename) {
-
+        protected function archive_xml_filename_remotly($filename) {
             //remote archive
-            $success = @ftp_rename( $ftpstream,
-                        "/outbound/$filename" ,
-                        "/backup/$filename"
-                        );
-
+            $tmpdir = $this->get_xml_tmp_path();
+            $success = ftps::ftps_rename( "/outbound/$filename","/backup/$filename", $tmpdir);
             if ($success) {
                 $this->msglog("Remotely archived $filename");
             } else {
                 $this->msglog("Could not remotely archive $filename",3);
             }
-
         }
 
         /**
         * Moves xml file locally to archive folder
         *
-        * @param stream $ftpstream
         * @param string $filename
         */
         protected function  archive_xml_filename_locally($filename) {
